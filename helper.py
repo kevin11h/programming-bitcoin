@@ -7,6 +7,7 @@ SIGHASH_ALL = 1
 SIGHASH_NONE = 2
 SIGHASH_SINGLE = 3
 BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+TWO_WEEKS = 60 * 60 * 24 * 14
 
 
 def run(test):
@@ -110,19 +111,64 @@ def h160_to_p2pkh_address(h160, testnet=False):
     else:
         prefix = b'\x00'
     return encode_base58_checksum(prefix + h160)
-      
-    # use encode_base58_checksum to get the address
 
 
 def h160_to_p2sh_address(h160, testnet=False):
     '''Takes a byte sequence hash160 and returns a p2sh address string'''
     # p2sh has a prefix of b'\x05' for mainnet, b'\xc4' for testnet
-    # use encode_base58_checksum to get the address
     if testnet:
         prefix = b'\xc4'
     else:
         prefix = b'\x05'
     return encode_base58_checksum(prefix + h160)
+
+
+def bits_to_target(bits):
+    '''Turns bits into a target (large 256-bit integer)'''
+    # last byte is exponent
+    exponent = bits[-1]
+    # the first three bytes are the coefficient in little endian
+    coefficient = little_endian_to_int(bits[:-1])
+    
+    # the formula is:
+    target = coefficient * 256**(exponent-3) # coefficient * 256**(exponent-3)
+    
+    return target
+
+
+# tag::source1[]
+def target_to_bits(target):
+    '''Turns a target integer back into bits'''
+    raw_bytes = target.to_bytes(32, 'big')
+    raw_bytes = raw_bytes.lstrip(b'\x00')  # <1>
+    if raw_bytes[0] > 0x7f:  # <2>
+        exponent = len(raw_bytes) + 1
+        coefficient = b'\x00' + raw_bytes[:2]
+    else:
+        exponent = len(raw_bytes)  # <3>
+        coefficient = raw_bytes[:3]  # <4>
+    new_bits = coefficient[::-1] + bytes([exponent])  # <5>
+    return new_bits
+# end::source1[]
+
+
+def calculate_new_bits(previous_bits, time_differential):
+    '''Calculates the new bits given
+    a 2016-block time differential and the previous bits'''
+    # if the time differential is greater than 8 weeks, set to 8 weeks
+    if time_differential > TWO_WEEKS:
+        time_differential = TWO_WEEKS* 4
+    # if the time differential is less than half a week, set to half a week
+    if time_differential < TWO_WEEKS //4:
+        time_differential = TWO_WEEKS//4
+    
+    # the new target is the previous target * time differential / two weeks
+    new_target = bits_to_target(previous_bits) * time_differential // TWO_WEEKS
+    # if the new target is bigger than MAX_TARGET, set to MAX_TARGET
+    return target_to_bits(new_target)
+    
+    # convert the new target to bits
+    
 
 
 class HelperTest(TestCase):
@@ -164,3 +210,9 @@ class HelperTest(TestCase):
         self.assertEqual(h160_to_p2sh_address(h160, testnet=False), want)
         want = '2N3u1R6uwQfuobCqbCgBkpsgBxvr1tZpe7B'
         self.assertEqual(h160_to_p2sh_address(h160, testnet=True), want)
+
+    def test_calculate_new_bits(self):
+        prev_bits = bytes.fromhex('54d80118')
+        time_differential = 302400
+        want = bytes.fromhex('00157617')
+        self.assertEqual(calculate_new_bits(prev_bits, time_differential), want)
